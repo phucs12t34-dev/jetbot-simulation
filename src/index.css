@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #080C10;
+    color: #E2E8F0;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0D131A;
+}
+::-webkit-scrollbar-thumb {
+  background: #1F2E3D;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #76B900;
+}
+
+/* Robotic Cyberpunk Glass & Glow Styles */
+.cyber-panel {
+  background: rgba(14, 21, 30, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(35, 51, 70, 0.7);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+.nvidia-glow {
+  box-shadow: 0 0 15px rgba(118, 185, 0, 0.45), 0 0 30px rgba(118, 185, 0, 0.2);
+}
+
+.nvidia-border-glow {
+  border-color: #76B900;
+  box-shadow: inset 0 0 10px rgba(118, 185, 0, 0.25), 0 0 15px rgba(118, 185, 0, 0.35);
+}
+
+.cyan-glow {
+  box-shadow: 0 0 15px rgba(0, 229, 255, 0.45);
+}
+
+/* Scanline Effect */
+.scanlines {
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.25) 50%
+  ), linear-gradient(
+    90deg,
+    rgba(255, 0, 0, 0.04),
+    rgba(0, 255, 0, 0.02),
+    rgba(0, 0, 255, 0.04)
+  );
+  background-size: 100% 4px, 6px 100%;
+  pointer-events: none;
+}
+
+/* Code Editor Font */
+.font-code {
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
