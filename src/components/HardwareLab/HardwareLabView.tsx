@@ -35,6 +35,7 @@ import {
   Terminal,
   GripHorizontal,
   RotateCcw,
+  X,
 } from "lucide-react";
 
 const DEFAULT_OFFSETS: { [id: string]: { x: number; y: number } } = {
@@ -208,10 +209,11 @@ export const HardwareLabView: React.FC = () => {
             return;
           }
           if (hit.object.userData && hit.object.userData.componentId) {
-            const comp = JETBOT_COMPONENTS.find((c) => c.id === hit.object.userData.componentId);
-            if (comp) {
+            const compId = hit.object.userData.componentId;
+            const anchor = calloutAnchors.find((a) => a.componentId === compId || a.id === compId);
+            if (anchor) {
               soundFx.playClick();
-              setSelectedComponent(comp);
+              setActiveCalloutId(anchor.id);
               break;
             }
           }
@@ -436,79 +438,138 @@ export const HardwareLabView: React.FC = () => {
           </button>
         </div>
 
-        {/* 3D FLOATING CALLOUT BADGES IN WORLD SPACE (Như trong ảnh mẫu) */}
+        {/* 3D INTERACTIVE ANCHORS & ON-DEMAND CALLOUT CARD */}
         {showCallouts && (
           <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
-            {/* SVG Canvas for High-Tech Leader Lines */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none">
-              <defs>
-                <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="3" result="glow" />
-                  <feComposite in="SourceGraphic" in2="glow" operator="over" />
-                </filter>
-              </defs>
-              {calloutAnchors.map((anchor) => {
-                if (!anchor.screenPos.visible) return null;
-                const offset = cardOffsets[anchor.id] || DEFAULT_OFFSETS[anchor.id] || { x: 70, y: -40 };
-                const ax = anchor.screenPos.x;
-                const ay = anchor.screenPos.y;
-                const cx = ax + offset.x;
-                const cy = ay + offset.y;
-                const cardW = 250;
-                const targetX = offset.x >= 0 ? cx : cx + cardW;
-                const targetY = cy + 32;
-                const midX = (ax + targetX) / 2;
-                return (
-                  <g key={"line-" + anchor.id}>
-                    <circle cx={ax} cy={ay} r="7" fill="none" stroke={anchor.color} strokeWidth="1.5" opacity="0.4" className="animate-ping" />
-                    <circle cx={ax} cy={ay} r="3.5" fill={anchor.color} stroke="#ffffff" strokeWidth="1" filter="url(#glow-filter)" />
-                    <path d={`M ${ax} ${ay} C ${midX} ${ay}, ${midX} ${targetY}, ${targetX} ${targetY}`} fill="none" stroke={anchor.color} strokeWidth="2" strokeDasharray={dragRef.current?.id === anchor.id ? "4 3" : undefined} opacity="0.85" />
-                    <circle cx={targetX} cy={targetY} r="3" fill="#ffffff" stroke={anchor.color} strokeWidth="2" />
-                  </g>
-                );
-              })}
-            </svg>
-
-            {/* Draggable Callout Cards */}
+            {/* 1. Subtle, Elegant 3D Component Anchor Pins (Compact Badges) */}
             {calloutAnchors.map((anchor) => {
               if (!anchor.screenPos.visible) return null;
-              const isHovered = hoveredComponentId === anchor.componentId || activeCalloutId === anchor.id;
-              const isDragging = dragRef.current?.id === anchor.id;
-              const comp = JETBOT_COMPONENTS.find((c) => c.id === anchor.componentId);
-              const offset = cardOffsets[anchor.id] || DEFAULT_OFFSETS[anchor.id] || { x: 70, y: -40 };
-              const posX = anchor.screenPos.x + offset.x;
-              const posY = anchor.screenPos.y + offset.y;
-
+              const isActive = activeCalloutId === anchor.id;
               return (
                 <div
-                  key={anchor.id}
-                  className={"absolute pointer-events-auto cyber-panel px-3 py-2 rounded-xl border flex flex-col gap-0.5 shadow-2xl backdrop-blur-md select-none transition-all duration-75 " + (isDragging ? "ring-2 ring-cyber-accent scale-105 z-40 bg-black/95 opacity-100 cursor-grabbing" : isHovered ? "scale-105 border-white bg-black/95 z-30 ring-2 ring-nvidia-green shadow-nvidia-green/40 cursor-grab" : "bg-[#090e17]/90 border-cyber-border hover:border-gray-400 opacity-95 cursor-grab")}
-                  style={{ left: `${posX}px`, top: `${posY}px`, width: "250px" }}
-                  onPointerDown={(e) => handleDragStart(anchor.id, e)}
-                  onMouseEnter={() => setActiveCalloutId(anchor.id)}
-                  onMouseLeave={() => setActiveCalloutId(null)}
+                  key={"pin-" + anchor.id}
+                  className={
+                    "absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-full border shadow-xl backdrop-blur-md transition-all group " +
+                    (isActive
+                      ? "bg-black ring-2 ring-nvidia-green scale-110 border-white z-30"
+                      : "bg-[#0a0f18]/85 border-cyber-border hover:border-nvidia-green hover:scale-105")
+                  }
+                  style={{ left: `${anchor.screenPos.x}px`, top: `${anchor.screenPos.y}px` }}
+                  onClick={() => {
+                    soundFx.playClick();
+                    setActiveCalloutId(activeCalloutId === anchor.id ? null : anchor.id);
+                  }}
+                  title="Bấm để xem chi tiết thẻ"
                 >
-                  <div className="flex items-center justify-between gap-1.5 border-b border-cyber-border/40 pb-1">
-                    <div className="flex items-center gap-1.5 text-[10px] font-bold font-mono tracking-wider uppercase text-gray-300">
-                      <GripHorizontal className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                      <span className="text-nvidia-green">{anchor.badge}</span>
-                    </div>
-                    <span className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold text-black" style={{ backgroundColor: anchor.color }}>{anchor.category}</span>
-                  </div>
-                  <div onClick={() => comp && handleFocusComponent(comp)} className="cursor-pointer group mt-0.5">
-                    <div className="text-xs font-bold text-white font-display leading-tight group-hover:text-nvidia-green transition-colors">{anchor.title}</div>
-                    <div className="text-[10px] text-gray-300 leading-snug font-sans mt-0.5 line-clamp-2">{anchor.subTitle}</div>
-                  </div>
-                  <div className="flex items-center justify-between text-[9px] text-gray-400 pt-1 font-mono">
-                    <span className="text-cyber-accent">Kéo thả để di chuyển</span>
-                    <button onClick={() => comp && handleFocusComponent(comp)} className="text-nvidia-green hover:underline flex items-center gap-0.5">
-                      <span>Chi tiết</span>
-                      <Info className="w-3 h-3" />
-                    </button>
-                  </div>
+                  <span className="w-2 h-2 rounded-full relative" style={{ backgroundColor: anchor.color }}>
+                    <span className="absolute inset-0 rounded-full animate-ping opacity-75" style={{ backgroundColor: anchor.color }} />
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-gray-200 group-hover:text-white">
+                    {anchor.badge}
+                  </span>
                 </div>
               );
             })}
+
+            {/* 2. Single Active Callout Card & Dynamic SVG Leader Line (Only when selected) */}
+            {(() => {
+              if (!activeCalloutId) return null;
+              const anchor = calloutAnchors.find((a) => a.id === activeCalloutId);
+              if (!anchor || !anchor.screenPos.visible) return null;
+
+              const offset = cardOffsets[anchor.id] || DEFAULT_OFFSETS[anchor.id] || { x: 70, y: -40 };
+              const ax = anchor.screenPos.x;
+              const ay = anchor.screenPos.y;
+              const posX = ax + offset.x;
+              const posY = ay + offset.y;
+              const cardW = 260;
+              const targetX = offset.x >= 0 ? posX : posX + cardW;
+              const targetY = posY + 35;
+              const midX = (ax + targetX) / 2;
+              const isDragging = dragRef.current?.id === anchor.id;
+              const comp = JETBOT_COMPONENTS.find((c) => c.id === anchor.componentId);
+
+              return (
+                <div key={"active-overlay-" + anchor.id}>
+                  {/* Dynamic SVG Leader Line */}
+                  <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                    <defs>
+                      <filter id="glow-filter-single" x="-20%" y="-20%" width="140%" height="140%">
+                        <feGaussianBlur stdDeviation="3" result="glow" />
+                        <feComposite in="SourceGraphic" in2="glow" operator="over" />
+                      </filter>
+                    </defs>
+                    <circle cx={ax} cy={ay} r="8" fill="none" stroke={anchor.color} strokeWidth="1.5" opacity="0.4" className="animate-ping" />
+                    <circle cx={ax} cy={ay} r="4" fill={anchor.color} stroke="#ffffff" strokeWidth="1.5" filter="url(#glow-filter-single)" />
+                    <path
+                      d={`M ${ax} ${ay} C ${midX} ${ay}, ${midX} ${targetY}, ${targetX} ${targetY}`}
+                      fill="none"
+                      stroke={anchor.color}
+                      strokeWidth="2"
+                      strokeDasharray={isDragging ? "4 3" : undefined}
+                      opacity="0.9"
+                    />
+                    <circle cx={targetX} cy={targetY} r="3" fill="#ffffff" stroke={anchor.color} strokeWidth="2" />
+                  </svg>
+
+                  {/* Draggable Active Card */}
+                  <div
+                    className={
+                      "absolute pointer-events-auto cyber-panel px-3.5 py-2.5 rounded-xl border flex flex-col gap-1 shadow-2xl backdrop-blur-md select-none transition-all duration-75 z-40 " +
+                      (isDragging
+                        ? "ring-2 ring-cyber-accent scale-105 bg-black/95 opacity-100 cursor-grabbing"
+                        : "scale-105 border-white bg-black/95 ring-2 ring-nvidia-green shadow-nvidia-green/40 cursor-grab")
+                    }
+                    style={{ left: `${posX}px`, top: `${posY}px`, width: "260px" }}
+                    onPointerDown={(e) => handleDragStart(anchor.id, e)}
+                  >
+                    {/* Card Header */}
+                    <div className="flex items-center justify-between gap-1.5 border-b border-cyber-border/60 pb-1">
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold font-mono tracking-wider uppercase text-gray-300">
+                        <GripHorizontal className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                        <span className="text-nvidia-green">{anchor.badge}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold text-black" style={{ backgroundColor: anchor.color }}>
+                          {anchor.category}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            soundFx.playClick();
+                            setActiveCalloutId(null);
+                          }}
+                          className="p-0.5 rounded hover:bg-white/20 text-gray-400 hover:text-white transition-colors"
+                          title="Đóng thẻ chú thích"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Card Body */}
+                    <div className="mt-0.5">
+                      <div className="text-xs font-bold text-white font-display leading-tight">{anchor.title}</div>
+                      <div className="text-[11px] text-gray-300 leading-snug font-sans mt-1 line-clamp-3">{anchor.subTitle}</div>
+                    </div>
+
+                    {/* Card Footer Actions */}
+                    <div className="flex items-center justify-between text-[9px] text-gray-400 pt-1.5 font-mono border-t border-cyber-border/40 mt-1">
+                      <span className="text-cyber-accent">Kéo thả để dời thẻ</span>
+                      {comp && (
+                        <button
+                          onClick={() => handleFocusComponent(comp)}
+                          className="text-nvidia-green hover:underline flex items-center gap-1 font-bold"
+                        >
+                          <span>Xem thông số chi tiết</span>
+                          <Info className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -800,9 +861,26 @@ export const HardwareLabView: React.FC = () => {
                 </div>
                 <div className="text-[11px] text-gray-400 font-mono truncate">{comp.name}</div>
                 <p className="text-[11px] text-gray-300 line-clamp-2 leading-relaxed mt-0.5">{comp.summaryVi}</p>
-                <div className="mt-1 flex items-center justify-between text-[10px] text-nvidia-green font-mono">
-                  <span>Xem thông số & chân nối →</span>
-                  <Info className="w-3.5 h-3.5" />
+                <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono pt-1 border-t border-cyber-border/40">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      soundFx.playClick();
+                      const anchor = calloutAnchors.find((a) => a.componentId === comp.id || a.id === comp.id);
+                      if (anchor) setActiveCalloutId(anchor.id);
+                    }}
+                    className="px-2 py-0.5 rounded bg-nvidia-green/15 text-nvidia-green hover:bg-nvidia-green hover:text-black font-bold transition-all flex items-center gap-1"
+                  >
+                    <Eye className="w-3 h-3" />
+                    <span>Xem chi tiết trên xe 3D</span>
+                  </button>
+                  <button
+                    onClick={() => handleFocusComponent(comp)}
+                    className="text-gray-400 hover:text-white flex items-center gap-0.5"
+                  >
+                    <span>Thông số</span>
+                    <Info className="w-3 h-3" />
+                  </button>
                 </div>
               </div>
             );
