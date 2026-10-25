@@ -17,6 +17,7 @@ export interface PathWaypoint {
   tangentZ: number;
   normalX: number;
   normalZ: number;
+  curvature: number; // 0 for straight, 0.5 for R=2.0m curves
   distanceAlongTrack: number;
 }
 
@@ -55,18 +56,18 @@ export class PhysicsKinematics {
     const straightLen = 3.6;
     const R = 2.0;
     const straightHalf = straightLen / 2; // 1.8
-    const straightPoints = 70;
-    const curvePoints = 90;
+    const straightPoints = 80;
+    const curvePoints = 100;
 
     let accumulatedDist = 0;
-    const rawPoints: { x: number; z: number; tX: number; tZ: number }[] = [];
+    const rawPoints: { x: number; z: number; tX: number; tZ: number; curvature: number }[] = [];
 
     // 1. Top Straight: (-1.8, -R) -> (+1.8, -R), moving towards +X
     for (let i = 0; i < straightPoints; i++) {
       const t = i / straightPoints;
       const x = -straightHalf + t * straightLen;
       const z = -R;
-      rawPoints.push({ x, z, tX: 1, tZ: 0 });
+      rawPoints.push({ x, z, tX: 1, tZ: 0, curvature: 0 });
     }
 
     // 2. Right Curve: center at (1.8, 0), angle from -PI/2 to +PI/2
@@ -75,10 +76,9 @@ export class PhysicsKinematics {
       const angle = -Math.PI / 2 + t * Math.PI; // -90 deg to +90 deg
       const x = straightHalf + Math.cos(angle) * R;
       const z = Math.sin(angle) * R;
-      // Tangent is perpendicular to radius: (-sin(angle), cos(angle))
       const tX = -Math.sin(angle);
       const tZ = Math.cos(angle);
-      rawPoints.push({ x, z, tX, tZ });
+      rawPoints.push({ x, z, tX, tZ, curvature: 1 / R });
     }
 
     // 3. Bottom Straight: (+1.8, +R) -> (-1.8, +R), moving towards -X
@@ -86,7 +86,7 @@ export class PhysicsKinematics {
       const t = i / straightPoints;
       const x = straightHalf - t * straightLen;
       const z = R;
-      rawPoints.push({ x, z, tX: -1, tZ: 0 });
+      rawPoints.push({ x, z, tX: -1, tZ: 0, curvature: 0 });
     }
 
     // 4. Left Curve: center at (-1.8, 0), angle from +PI/2 to +3PI/2
@@ -97,7 +97,7 @@ export class PhysicsKinematics {
       const z = Math.sin(angle) * R;
       const tX = -Math.sin(angle);
       const tZ = Math.cos(angle);
-      rawPoints.push({ x, z, tX, tZ });
+      rawPoints.push({ x, z, tX, tZ, curvature: 1 / R });
     }
 
     for (let i = 0; i < rawPoints.length; i++) {
@@ -105,7 +105,6 @@ export class PhysicsKinematics {
       const next = rawPoints[(i + 1) % rawPoints.length];
       const segLen = Math.hypot(next.x - curr.x, next.z - curr.z);
 
-      // Normal vector is 90 deg clockwise from tangent: (-tZ, tX)
       const len = Math.hypot(curr.tX, curr.tZ) || 1;
       const normTX = curr.tX / len;
       const normTZ = curr.tZ / len;
@@ -117,6 +116,7 @@ export class PhysicsKinematics {
         tangentZ: normTZ,
         normalX: -normTZ,
         normalZ: normTX,
+        curvature: curr.curvature,
         distanceAlongTrack: accumulatedDist,
       });
 
@@ -130,22 +130,13 @@ export class PhysicsKinematics {
     this.obstacles = [];
 
     if (arenaId === 'obstacles') {
-      // 4 Realistic Obstacles spaced along the circuit
       const rawObstacles: Omit<Obstacle, 'trackDist'>[] = [
-        // Obstacle 1: Crate on top straight, slightly right of yellow dashed line
         { x: 0.0, z: -1.82, radius: 0.18, type: 'box', label: 'Thùng Gỗ #1', dodgeSide: -1 },
-
-        // Obstacle 2: Warning cone on apex of right curve, inside of curve
         { x: 3.65, z: 0.20, radius: 0.16, type: 'cone', label: 'Nón Tiêu #2', dodgeSide: -1 },
-
-        // Obstacle 3: Industrial barrel on bottom straight, slightly right of track
         { x: 0.0, z: 1.82, radius: 0.18, type: 'barrel', label: 'Thùng Phuy #3', dodgeSide: -1 },
-
-        // Obstacle 4: Warning cone on left curve apex, inside of curve
         { x: -3.65, z: -0.20, radius: 0.16, type: 'cone', label: 'Nón Tiêu #4', dodgeSide: -1 },
       ];
 
-      // Pre-calculate track distance for each obstacle
       this.obstacles = rawObstacles.map((obs) => {
         let bestIdx = 0;
         let minDist = Infinity;
@@ -170,7 +161,7 @@ export class PhysicsKinematics {
     const currentMaxSpeed = this.baseMaxSpeed * speedMult;
 
     // 1. Motor Inertia Smoothing
-    const inertia = Math.min(1.0, dt * 16);
+    const inertia = Math.min(1.0, dt * 18);
     state.leftMotor.currentSpeed += (state.leftMotor.targetSpeed - state.leftMotor.currentSpeed) * inertia;
     state.rightMotor.currentSpeed += (state.rightMotor.targetSpeed - state.rightMotor.currentSpeed) * inertia;
 
@@ -187,18 +178,16 @@ export class PhysicsKinematics {
     const v = (vL + vR) / 2;
 
     // Angular velocity omega (rad/s)
-    // Turning right: vL > vR -> theta decreases (omega < 0)
-    // Turning left: vR > vL -> theta increases (omega > 0)
+    // Turning right: vL > vR -> omega < 0 -> theta decreases
+    // Turning left: vR > vL -> omega > 0 -> theta increases
     const omega = (vR - vL) / this.trackWidth;
 
     // 2. Pose Kinematics Integration
     state.pose.theta += omega * dt;
 
-    // Normalize theta to [-PI, PI]
     while (state.pose.theta > Math.PI) state.pose.theta -= Math.PI * 2;
     while (state.pose.theta < -Math.PI) state.pose.theta += Math.PI * 2;
 
-    // In 3D: forward direction along angle theta (theta = 0 points along -Z, theta = -PI/2 points along +X)
     const dx = -Math.sin(state.pose.theta) * v * dt;
     const dz = -Math.cos(state.pose.theta) * v * dt;
 
@@ -211,7 +200,6 @@ export class PhysicsKinematics {
       const dist = Math.hypot(nextX - obs.x, nextZ - obs.z);
       const minDist = robotRadius + obs.radius;
       if (dist < minDist) {
-        // Push robot away gently
         const pushAngle = Math.atan2(nextZ - obs.z, nextX - obs.x);
         nextX = obs.x + Math.cos(pushAngle) * minDist;
         nextZ = obs.z + Math.sin(pushAngle) * minDist;
@@ -237,7 +225,6 @@ export class PhysicsKinematics {
     state.telemetry.rightMotorRpm = state.rightMotor.rpm;
     state.telemetry.distanceTraveled += Math.abs(v * dt);
 
-    // Battery & GPU stats
     if (Math.abs(v) > 0.01) {
       state.telemetry.gpuLoad = Math.min(95, Math.round(30 + Math.abs(v / currentMaxSpeed) * 55));
     } else {
@@ -251,7 +238,6 @@ export class PhysicsKinematics {
   private updateAIAndAutonomous(state: RobotState, _dt: number) {
     if (this.trackPath.length === 0) return;
 
-    // Robot orientation vectors in 3D world
     const forwardX = -Math.sin(state.pose.theta);
     const forwardZ = -Math.cos(state.pose.theta);
     const rightX = Math.cos(state.pose.theta);
@@ -260,7 +246,6 @@ export class PhysicsKinematics {
     const N = this.trackPath.length;
 
     // 1. Closest Waypoint Search
-    // Local window search around lastClosestIdx to guarantee monotonic smooth progress
     let bestIdx = this.lastClosestIdx;
     let minDistSq = Infinity;
 
@@ -274,7 +259,6 @@ export class PhysicsKinematics {
       }
     }
 
-    // Fallback: If robot is far off (> 1.2m), do a full global search
     if (minDistSq > 1.44) {
       for (let i = 0; i < N; i++) {
         const pt = this.trackPath[i];
@@ -298,7 +282,6 @@ export class PhysicsKinematics {
       const toObsZ = obs.z - state.pose.z;
       const dist = Math.hypot(toObsX, toObsZ);
 
-      // Check if obstacle is ahead within forward cone (dot > 0.1)
       const dot = (toObsX * forwardX + toObsZ * forwardZ) / (dist || 1);
       if (dot > 0.1 && dist < 2.0) {
         if (dist < nearestObstacleDist) {
@@ -308,32 +291,14 @@ export class PhysicsKinematics {
       }
     }
 
-    // Simulated ResNet-18 collision probability
     if (nearestObstacleDist < 0.85) {
       state.aiProbBlocked = Math.min(1.0, 0.45 + (0.85 - nearestObstacleDist) * 1.8);
     } else {
       state.aiProbBlocked = Math.max(0.02, 1.0 / (1.0 + nearestObstacleDist * 4.0));
     }
 
-    // 3. Dynamic Lookahead Point on Track Path
-    const currentSpeed = Math.abs(state.telemetry.linearVelocity) || 0.3;
-    const lookaheadDistance = Math.max(0.34, Math.min(0.52, 0.28 + currentSpeed * 0.22));
-
-    let targetIdx = bestIdx;
-    let accumulatedDist = 0;
-    while (accumulatedDist < lookaheadDistance) {
-      const nextIdx = (targetIdx + 1) % N;
-      const p1 = this.trackPath[targetIdx];
-      const p2 = this.trackPath[nextIdx];
-      accumulatedDist += Math.hypot(p2.x - p1.x, p2.z - p1.z);
-      targetIdx = nextIdx;
-    }
-
-    const targetPt = this.trackPath[targetIdx];
-    let targetX = targetPt.x;
-    let targetZ = targetPt.z;
-
-    // 4. Smooth Obstacle Avoidance Lateral Shift
+    // 3. Dynamic Obstacle Avoidance Lateral Offset
+    let dodgeOffset = 0;
     if (this.currentArenaId === 'obstacles' && this.obstacles.length > 0) {
       const currTrackDist = closestPt.distanceAlongTrack;
 
@@ -342,46 +307,93 @@ export class PhysicsKinematics {
         if (relDist < -this.totalTrackLength / 2) relDist += this.totalTrackLength;
         if (relDist > this.totalTrackLength / 2) relDist -= this.totalTrackLength;
 
-        // Influence zone: from 1.8m ahead down to -0.4m behind
-        if (relDist >= -0.4 && relDist <= 1.8) {
+        // Influence zone: from 1.6m ahead down to -0.3m behind
+        if (relDist >= -0.3 && relDist <= 1.6) {
           let smooth = 0;
-          if (relDist > 0.4) {
-            // Smooth sinusoidal approach ramp from 1.8m down to 0.4m
-            const tRamp = (1.8 - relDist) / 1.4;
+          if (relDist > 0.35) {
+            const tRamp = (1.6 - relDist) / 1.25;
             smooth = Math.sin((tRamp * Math.PI) / 2);
           } else if (relDist >= -0.1) {
-            // Full clearance while passing obstacle
             smooth = 1.0;
           } else {
-            // Smooth ramp down from -0.1m to -0.4m after passing
-            const tRamp = (relDist - -0.4) / 0.3;
+            const tRamp = (relDist - -0.3) / 0.2;
             smooth = Math.sin((tRamp * Math.PI) / 2);
           }
 
-          const dodgeAmount = 0.32 * smooth * obs.dodgeSide;
-          targetX += targetPt.normalX * dodgeAmount;
-          targetZ += targetPt.normalZ * dodgeAmount;
-          break; // apply closest active obstacle
+          dodgeOffset = 0.30 * smooth * obs.dodgeSide;
+          break;
         }
       }
     }
 
-    // 5. Target Point in Robot Local Frame
+    // 4. Cross-Track Error (CTE) and Track Heading
+    const dx = state.pose.x - closestPt.x;
+    const dz = state.pose.z - closestPt.z;
+    const rawCte = dx * closestPt.normalX + dz * closestPt.normalZ;
+    const effectiveCte = rawCte - dodgeOffset;
+
+    // Heading angle of track tangent: forward direction is (-tX, -tZ)
+    const trackHeading = Math.atan2(-closestPt.tangentX, -closestPt.tangentZ);
+    let headingError = state.pose.theta - trackHeading;
+    while (headingError > Math.PI) headingError -= Math.PI * 2;
+    while (headingError < -Math.PI) headingError += Math.PI * 2;
+
+    // 5. Lookahead Point for Camera & AI Visualization
+    const lookaheadDist = Math.max(0.38, Math.min(0.55, 0.32 + Math.abs(state.telemetry.linearVelocity) * 0.25));
+    let targetIdx = bestIdx;
+    let accumulatedDist = 0;
+    while (accumulatedDist < lookaheadDist) {
+      const nextIdx = (targetIdx + 1) % N;
+      const p1 = this.trackPath[targetIdx];
+      const p2 = this.trackPath[nextIdx];
+      accumulatedDist += Math.hypot(p2.x - p1.x, p2.z - p1.z);
+      targetIdx = nextIdx;
+    }
+
+    const targetPt = this.trackPath[targetIdx];
+    const targetX = targetPt.x + targetPt.normalX * dodgeOffset;
+    const targetZ = targetPt.z + targetPt.normalZ * dodgeOffset;
+
     const toTargetX = targetX - state.pose.x;
     const toTargetZ = targetZ - state.pose.z;
-
     const localForward = forwardX * toTargetX + forwardZ * toTargetZ;
     const localRight = rightX * toTargetX + rightZ * toTargetZ;
 
-    // Normalized Camera Target Point: x in [-1, 1], y in [0, 1]
-    const normX = Math.max(-1, Math.min(1, localRight / 0.45));
-    const normY = Math.max(0.1, Math.min(1, localForward / 1.5));
-    state.aiTargetPoint = { x: normX, y: normY };
+    state.aiTargetPoint = {
+      x: Math.max(-1, Math.min(1, localRight / 0.42)),
+      y: Math.max(0.1, Math.min(1, localForward / 1.4)),
+    };
 
-    // 6. Pure Pursuit Steering Angle alpha
-    const L = Math.hypot(localForward, localRight) || 0.01;
-    const alpha = Math.atan2(localRight, Math.max(0.02, localForward));
-    state.aiRoadSteering = Math.max(-1.0, Math.min(1.0, alpha / 0.8));
+    // 6. High-Precision Stanley + Curvature Feedforward Controller
+    const vCurr = Math.max(0.18, Math.abs(state.telemetry.linearVelocity));
+    const ke = 2.4; // Cross-track error gain
+    const kd = 0.08; // Angular velocity damping gain
+
+    const cteSteer = Math.atan2(ke * effectiveCte, vCurr);
+    const curvatureFeedforward = closestPt.curvature * (this.trackWidth * 0.85);
+
+    // steer > 0 turns right, steer < 0 turns left
+    let steer = headingError - cteSteer - kd * state.telemetry.angularVelocity + curvatureFeedforward;
+    steer = Math.max(-0.85, Math.min(0.85, steer));
+    state.aiRoadSteering = steer;
+
+    // 7. Curvature-Adaptive Speed Throttling
+    const baseCruise = 0.52;
+    const curveSeverity = closestPt.curvature + Math.abs(steer) * 0.6;
+    const speedFactor = 1.0 / (1.0 + curveSeverity * 1.1);
+    const vCruise = baseCruise * speedFactor;
+
+    // 8. AUTONOMOUS CONTROLLER DRIVE
+    if (state.autonomousMode !== 'none') {
+      if (localForward < -0.1) {
+        const turnDir = localRight >= 0 ? 0.45 : -0.45;
+        state.leftMotor.targetSpeed = turnDir;
+        state.rightMotor.targetSpeed = -turnDir;
+      } else {
+        state.leftMotor.targetSpeed = Math.max(-1.0, Math.min(1.0, vCruise * (1.0 + steer)));
+        state.rightMotor.targetSpeed = Math.max(-1.0, Math.min(1.0, vCruise * (1.0 - steer)));
+      }
+    }
 
     // Detected objects for camera bounding boxes
     state.detectedObjects = [];
@@ -390,39 +402,11 @@ export class PhysicsKinematics {
       state.detectedObjects.push({
         label: visualObstacle.label,
         confidence: Math.round(92 + Math.random() * 7),
-        x: (normX + 1) / 2,
+        x: (state.aiTargetPoint.x + 1) / 2,
         y: 0.55,
         w: Math.max(0.18, 0.42 / d),
         h: Math.max(0.18, 0.42 / d),
       });
-    }
-
-    // 7. AUTONOMOUS CONTROLLER DRIVE
-    if (state.autonomousMode !== 'none') {
-      // Differential drive Pure Pursuit curvature: kappa = 2*localRight / (L^2)
-      // omega = v * kappa
-      // steerTerm = (localRight * trackWidth) / (L^2)
-      let steerTerm = (localRight * this.trackWidth) / (L * L);
-      steerTerm = Math.max(-0.85, Math.min(0.85, steerTerm * 1.6));
-
-      // Base cruise speed
-      const baseCruise = 0.50;
-
-      // Curve speed adaptation: gently slow down if turning sharply
-      const turnSeverity = Math.min(1.0, Math.abs(alpha));
-      const turnFactor = Math.max(0.65, 1.0 - turnSeverity * 0.45);
-      const vCruise = baseCruise * turnFactor;
-
-      // If target is behind robot (e.g. after manual spin), turn in-place towards track
-      if (localForward < 0) {
-        const turnDir = localRight >= 0 ? 0.5 : -0.5;
-        state.leftMotor.targetSpeed = turnDir;
-        state.rightMotor.targetSpeed = -turnDir;
-      } else {
-        // Normal Pure Pursuit differential drive
-        state.leftMotor.targetSpeed = Math.max(-1.0, Math.min(1.0, vCruise * (1.0 + steerTerm)));
-        state.rightMotor.targetSpeed = Math.max(-1.0, Math.min(1.0, vCruise * (1.0 - steerTerm)));
-      }
     }
   }
 
@@ -437,7 +421,7 @@ export class PhysicsKinematics {
     // Place robot at start of top straight (-1.8, -2.0) directly on yellow dashed line facing +X (theta = -PI/2)
     state.pose.x = -1.8;
     state.pose.z = -2.0;
-    state.pose.theta = -Math.PI / 2; // facing right (+X direction, along the track)
+    state.pose.theta = -Math.PI / 2;
 
     this.lastClosestIdx = 0;
     state.telemetry.linearVelocity = 0;

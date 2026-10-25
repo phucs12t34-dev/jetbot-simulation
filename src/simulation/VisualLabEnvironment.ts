@@ -38,8 +38,12 @@ export class VisualLabEnvironment {
   ledRedLight: THREE.PointLight | null = null;
   ledGreenMesh: THREE.Mesh | null = null;
   ledRedMesh: THREE.Mesh | null = null;
+  motorDriverLed: THREE.PointLight | null = null;
 
   meterNeedle: THREE.Mesh | null = null;
+
+  rollerLeft: THREE.Mesh | null = null;
+  rollerRight: THREE.Mesh | null = null;
 
   visionCones: Array<{ mesh: THREE.Mesh; spline: THREE.CatmullRomCurve3; t: number; speed: number }> = [];
   signalPulses: Array<{ mesh: THREE.Mesh; spline: THREE.CatmullRomCurve3; t: number; speed: number }> = [];
@@ -68,20 +72,27 @@ export class VisualLabEnvironment {
     this.pullRingsGroup = new THREE.Group();
 
     this.group.add(this.workbenchGroup);
-    this.group.add(this.visionFieldGroup);
     this.group.add(this.signalFlowGroup);
     this.group.add(this.dynamicsVectorsGroup);
     this.group.add(this.pullRingsGroup);
 
     this.buildWorkbench();
-    this.buildVisionField();
     this.buildSignalFlow();
     this.buildDynamicsVectors();
   }
 
   public setParts(parts: JetBotMeshParts) {
     this.parts = parts;
-    this.buildPullRings();
+    this.buildCameraVisionField(parts.camera);
+    this.attachDynamicsVectorsToWheels(parts);
+    this.buildPullRings(parts);
+
+    const driverLedLight = new THREE.PointLight(0x10b981, 0.4, 0.15);
+    driverLedLight.position.set(0, 0.015, 0);
+    parts.motorDriver.add(driverLedLight);
+    this.motorDriverLed = driverLedLight;
+
+    this.updateOled(0);
   }
 
   private buildWorkbench() {
@@ -120,29 +131,24 @@ export class VisualLabEnvironment {
       roughness: 0.25,
     });
 
-    const legPositions = [
+    [
       [-tableW / 2 + 0.04, -tableH - legHeight / 2, -tableD / 2 + 0.04],
       [tableW / 2 - 0.04, -tableH - legHeight / 2, -tableD / 2 + 0.04],
       [-tableW / 2 + 0.04, -tableH - legHeight / 2, tableD / 2 - 0.04],
       [tableW / 2 - 0.04, -tableH - legHeight / 2, tableD / 2 - 0.04],
-    ];
-
-    legPositions.forEach(([lx, ly, lz]) => {
+    ].forEach(([lx, ly, lz]) => {
       const legGeom = new THREE.CylinderGeometry(legRadius, legRadius, legHeight, 16);
       const leg = new THREE.Mesh(legGeom, legMat);
       leg.position.set(lx, ly, lz);
       leg.castShadow = true;
       this.workbenchGroup.add(leg);
 
-      const footGeom = new THREE.CylinderGeometry(legRadius * 1.6, legRadius * 1.8, 0.01, 16);
-      const foot = new THREE.Mesh(footGeom, trimMat);
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(legRadius * 1.6, legRadius * 1.8, 0.01, 16), trimMat);
       foot.position.set(lx, ly - legHeight / 2, lz);
       this.workbenchGroup.add(foot);
     });
 
-    const matW = 0.46;
-    const matD = 0.36;
-    const matGeom = new THREE.PlaneGeometry(matW, matD);
+    const matGeom = new THREE.PlaneGeometry(0.46, 0.36);
     const esdMat = new THREE.MeshStandardMaterial({
       color: isLight ? 0x0284c7 : 0x075985,
       roughness: 0.85,
@@ -160,11 +166,7 @@ export class VisualLabEnvironment {
 
     const railRadius = 0.0045;
     const railLength = 0.48;
-    const railMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      metalness: 0.95,
-      roughness: 0.15,
-    });
+    const railMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, metalness: 0.95, roughness: 0.15 });
 
     [-0.055, 0.055].forEach((rx) => {
       const railGeom = new THREE.CylinderGeometry(railRadius, railRadius, railLength, 24);
@@ -175,12 +177,27 @@ export class VisualLabEnvironment {
       this.workbenchGroup.add(rail);
 
       [-railLength / 2 + 0.02, railLength / 2 - 0.02].forEach((rz) => {
-        const blockGeom = new THREE.BoxGeometry(0.016, 0.01, 0.018);
-        const block = new THREE.Mesh(blockGeom, legMat);
+        const block = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.01, 0.018), legMat);
         block.position.set(rx, 0.005, -0.12 + rz);
         this.workbenchGroup.add(block);
       });
     });
+
+    // Dyno Rollers under the wheels
+    const rollerMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.85, roughness: 0.3 });
+    const rollerGeom = new THREE.CylinderGeometry(0.012, 0.012, 0.032, 24);
+
+    const rollerL = new THREE.Mesh(rollerGeom, rollerMat);
+    rollerL.rotation.z = Math.PI / 2;
+    rollerL.position.set(-0.082, 0.001, 0);
+    this.workbenchGroup.add(rollerL);
+    this.rollerLeft = rollerL;
+
+    const rollerR = new THREE.Mesh(rollerGeom, rollerMat);
+    rollerR.rotation.z = Math.PI / 2;
+    rollerR.position.set(0.082, 0.001, 0);
+    this.workbenchGroup.add(rollerR);
+    this.rollerRight = rollerR;
 
     this.buildScaleRuler();
     this.buildDualLedModule();
@@ -455,21 +472,27 @@ export class VisualLabEnvironment {
     this.workbenchGroup.add(group);
   }
 
-  private buildVisionField() {
+  private buildCameraVisionField(cameraGroup: THREE.Group) {
     this.visionCones = [];
-    const camOrigin = new THREE.Vector3(0, 0.081, -0.088);
 
-    const frustumLength = 0.22;
-    const frustumW = 0.16;
-    const frustumH = 0.12;
+    while (this.visionFieldGroup.children.length > 0) {
+      this.visionFieldGroup.remove(this.visionFieldGroup.children[0]);
+    }
+
+    cameraGroup.add(this.visionFieldGroup);
+
+    const lensLocal = new THREE.Vector3(0, 0.081, -0.088);
+    const frustumLength = 0.24;
+    const frustumW = 0.18;
+    const frustumH = 0.14;
 
     const vertices: number[] = [];
     const indices: number[] = [];
 
-    vertices.push(camOrigin.x, camOrigin.y, camOrigin.z);
+    vertices.push(lensLocal.x, lensLocal.y, lensLocal.z);
 
-    const baseZ = camOrigin.z - frustumLength;
-    const baseY = camOrigin.y - 0.055;
+    const baseZ = lensLocal.z - frustumLength * Math.cos(-0.22);
+    const baseY = lensLocal.y + frustumLength * Math.sin(-0.22);
 
     vertices.push(-frustumW / 2, baseY + frustumH / 2, baseZ);
     vertices.push(frustumW / 2, baseY + frustumH / 2, baseZ);
@@ -526,12 +549,12 @@ export class VisualLabEnvironment {
     });
 
     targetEndPoints.forEach((endPt, idx) => {
-      const midX = (camOrigin.x + endPt.x) / 2 + (idx % 2 === 0 ? 0.01 : -0.01);
-      const midY = (camOrigin.y + endPt.y) / 2 + 0.01;
-      const midZ = (camOrigin.z + endPt.z) / 2;
+      const midX = (lensLocal.x + endPt.x) / 2 + (idx % 2 === 0 ? 0.01 : -0.01);
+      const midY = (lensLocal.y + endPt.y) / 2 + 0.008;
+      const midZ = (lensLocal.z + endPt.z) / 2;
       const midPt = new THREE.Vector3(midX, midY, midZ);
 
-      const spline = new THREE.CatmullRomCurve3([camOrigin, midPt, endPt]);
+      const spline = new THREE.CatmullRomCurve3([lensLocal, midPt, endPt]);
       const pts = spline.getPoints(24);
       const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
       const line = new THREE.Line(lineGeom, rayMat);
@@ -548,6 +571,67 @@ export class VisualLabEnvironment {
         });
       }
     });
+  }
+
+  private buildDynamicsVectors() {}
+
+  private attachDynamicsVectorsToWheels(parts: JetBotMeshParts) {
+    const arcRadius = 0.038;
+    const arcGeom = new THREE.TorusGeometry(arcRadius, 0.002, 12, 32, Math.PI * 1.3);
+    const arcMat = new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.8,
+    });
+
+    const leftArc = new THREE.Mesh(arcGeom, arcMat);
+    leftArc.rotation.y = Math.PI / 2;
+    leftArc.position.set(-0.018, 0, 0);
+    parts.leftWheel.add(leftArc);
+    this.leftTorqueArc = leftArc;
+
+    const rightArc = new THREE.Mesh(arcGeom, arcMat);
+    rightArc.rotation.y = Math.PI / 2;
+    rightArc.position.set(0.018, 0, 0);
+    parts.rightWheel.add(rightArc);
+    this.rightTorqueArc = rightArc;
+
+    const createVelocityArrow = (colorHex: number) => {
+      const group = new THREE.Group();
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.002, 0.002, 0.06, 12),
+        new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.6 })
+      );
+      shaft.rotation.x = Math.PI / 2;
+      shaft.position.z = -0.03;
+      group.add(shaft);
+
+      const head = new THREE.Mesh(
+        new THREE.ConeGeometry(0.005, 0.015, 12),
+        new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 1.0 })
+      );
+      head.rotation.x = -Math.PI / 2;
+      head.position.z = -0.068;
+      group.add(head);
+
+      return group;
+    };
+
+    const leftArrow = createVelocityArrow(0x10b981);
+    leftArrow.position.set(-0.016, 0, 0);
+    parts.leftWheel.add(leftArrow);
+    this.leftVelArrow = leftArrow;
+
+    const rightArrow = createVelocityArrow(0x10b981);
+    rightArrow.position.set(0.016, 0, 0);
+    parts.rightWheel.add(rightArrow);
+    this.rightVelArrow = rightArrow;
+
+    const centerArrow = createVelocityArrow(0x76b900);
+    centerArrow.scale.set(1.3, 1.3, 1.3);
+    centerArrow.position.set(0, 0.0325, -0.02);
+    parts.chassis.add(centerArrow);
+    this.resultantVelArrow = centerArrow;
   }
 
   private buildSignalFlow() {
@@ -619,68 +703,7 @@ export class VisualLabEnvironment {
     });
   }
 
-  private buildDynamicsVectors() {
-    const arcRadius = 0.036;
-    const arcGeom = new THREE.TorusGeometry(arcRadius, 0.002, 12, 32, Math.PI * 1.3);
-    const arcMat = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b,
-      emissive: 0xf59e0b,
-      emissiveIntensity: 0.8,
-    });
-
-    const leftArc = new THREE.Mesh(arcGeom, arcMat);
-    leftArc.rotation.y = Math.PI / 2;
-    leftArc.position.set(-0.088, 0.0325, 0);
-    this.dynamicsVectorsGroup.add(leftArc);
-    this.leftTorqueArc = leftArc;
-
-    const rightArc = new THREE.Mesh(arcGeom, arcMat);
-    rightArc.rotation.y = Math.PI / 2;
-    rightArc.position.set(0.088, 0.0325, 0);
-    this.dynamicsVectorsGroup.add(rightArc);
-    this.rightTorqueArc = rightArc;
-
-    const createVelocityArrow = (colorHex: number) => {
-      const group = new THREE.Group();
-      const shaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.002, 0.002, 0.06, 12),
-        new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.6 })
-      );
-      shaft.rotation.x = Math.PI / 2;
-      shaft.position.z = -0.03;
-      group.add(shaft);
-
-      const head = new THREE.Mesh(
-        new THREE.ConeGeometry(0.005, 0.015, 12),
-        new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 1.0 })
-      );
-      head.rotation.x = -Math.PI / 2;
-      head.position.z = -0.068;
-      group.add(head);
-
-      return group;
-    };
-
-    const leftArrow = createVelocityArrow(0x10b981);
-    leftArrow.position.set(-0.085, 0.0325, 0);
-    this.dynamicsVectorsGroup.add(leftArrow);
-    this.leftVelArrow = leftArrow;
-
-    const rightArrow = createVelocityArrow(0x10b981);
-    rightArrow.position.set(0.085, 0.0325, 0);
-    this.dynamicsVectorsGroup.add(rightArrow);
-    this.rightVelArrow = rightArrow;
-
-    const centerArrow = createVelocityArrow(0x76b900);
-    centerArrow.scale.set(1.3, 1.3, 1.3);
-    centerArrow.position.set(0, 0.0325, 0);
-    this.dynamicsVectorsGroup.add(centerArrow);
-    this.resultantVelArrow = centerArrow;
-  }
-
-  private buildPullRings() {
-    if (!this.parts) return;
-
+  private buildPullRings(parts: JetBotMeshParts) {
     const ringMat = new THREE.MeshStandardMaterial({
       color: 0xf59e0b,
       metalness: 0.9,
@@ -691,7 +714,7 @@ export class VisualLabEnvironment {
 
     const createPullRing = (name: string, targetPart: THREE.Group, offset: THREE.Vector3) => {
       const ringGroup = new THREE.Group();
-      ringGroup.name = "PullRing_" + name;
+      ringGroup.name = 'PullRing_' + name;
 
       const stemGeom = new THREE.CylinderGeometry(0.002, 0.002, 0.024, 16);
       const stem = new THREE.Mesh(stemGeom, ringMat);
@@ -714,10 +737,47 @@ export class VisualLabEnvironment {
       this.pullRings.set(name, ringGroup);
     };
 
-    createPullRing('camera', this.parts.camera, new THREE.Vector3(0, 0.098, -0.076));
-    createPullRing('jetson', this.parts.jetsonNano, new THREE.Vector3(0, 0.092, 0.01));
-    createPullRing('oled', this.parts.oled, new THREE.Vector3(0, 0.128, -0.045));
-    createPullRing('motors', this.parts.chassis, new THREE.Vector3(0, 0.042, 0.045));
+    createPullRing('camera', parts.camera, new THREE.Vector3(0, 0.098, -0.076));
+    createPullRing('jetson', parts.jetsonNano, new THREE.Vector3(0, 0.092, 0.01));
+    createPullRing('oled', parts.oled, new THREE.Vector3(0, 0.128, -0.045));
+    createPullRing('motors', parts.chassis, new THREE.Vector3(0, 0.042, 0.045));
+  }
+
+  public updateOled(motorSpeed: number) {
+    if (!this.parts) return;
+    const canvas = this.parts.oledCanvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText('NVIDIA JETBOT v2.0', 12, 24);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px monospace';
+    ctx.fillText('IP: 192.168.1.105', 12, 48);
+
+    const percent = Math.round(motorSpeed * 100);
+    const sign = percent > 0 ? '+' : '';
+    ctx.fillText('PWM: ' + sign + percent + '%  ' + (motorSpeed * 7.4).toFixed(1) + 'V', 12, 72);
+
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(12, 82, 232, 16);
+
+    const barW = Math.max(0, Math.min(228, Math.abs(motorSpeed) * 228));
+    ctx.fillStyle = motorSpeed >= 0 ? '#10b981' : '#ef4444';
+    ctx.fillRect(14, 84, barW, 12);
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '14px monospace';
+    const rpm = Math.round(Math.abs(motorSpeed) * 180);
+    ctx.fillText('RPM: ' + rpm + '  AI: READY', 12, 118);
+
+    this.parts.oledTexture.needsUpdate = true;
   }
 
   public update(dt: number, motorSpeed: number, options: VisualLabOptions) {
@@ -728,6 +788,22 @@ export class VisualLabEnvironment {
     this.dynamicsVectorsGroup.visible = options.showDynamicsVectors;
     this.pullRingsGroup.visible = options.showPullRings;
 
+    // 1. Dyno Rollers under wheels spin with contact friction
+    if (this.rollerLeft && this.rollerRight && motorSpeed !== 0) {
+      const rollerSpin = motorSpeed * dt * 16 * 2.7;
+      this.rollerLeft.rotation.x -= rollerSpin;
+      this.rollerRight.rotation.x -= rollerSpin;
+    }
+
+    // 2. Motor Driver Board LED PWM
+    if (this.motorDriverLed) {
+      this.motorDriverLed.intensity = 0.2 + Math.abs(motorSpeed) * 1.6;
+    }
+
+    // 3. Update OLED on JetBot car
+    this.updateOled(motorSpeed);
+
+    // 4. Vision Cones Animation
     if (options.showVisionField) {
       this.visionCones.forEach((cone) => {
         cone.t = (cone.t + dt * cone.speed) % 1.0;
@@ -738,6 +814,7 @@ export class VisualLabEnvironment {
       });
     }
 
+    // 5. Signal Flow Animation
     if (options.showSignalFlow) {
       const pulseSpeedMult = 0.6 + Math.abs(motorSpeed) * 1.5;
       this.signalPulses.forEach((pulse) => {
@@ -747,15 +824,16 @@ export class VisualLabEnvironment {
       });
     }
 
+    // 6. D2 Dual LED Module
     if (this.ledGreenLight && this.ledRedLight && this.ledGreenMesh && this.ledRedMesh) {
-      if (motorSpeed > 0.05) {
-        this.ledGreenLight.intensity = 0.5 + motorSpeed * 1.8;
+      if (motorSpeed > 0.04) {
+        this.ledGreenLight.intensity = 0.6 + motorSpeed * 1.8;
         this.ledRedLight.intensity = 0.05;
         (this.ledGreenMesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.0 + motorSpeed * 1.5;
         (this.ledRedMesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.1;
-      } else if (motorSpeed < -0.05) {
+      } else if (motorSpeed < -0.04) {
         this.ledGreenLight.intensity = 0.05;
-        this.ledRedLight.intensity = 0.5 + Math.abs(motorSpeed) * 1.8;
+        this.ledRedLight.intensity = 0.6 + Math.abs(motorSpeed) * 1.8;
         (this.ledGreenMesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.1;
         (this.ledRedMesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.0 + Math.abs(motorSpeed) * 1.5;
       } else {
@@ -766,13 +844,15 @@ export class VisualLabEnvironment {
       }
     }
 
+    // 7. Precision Galvanometer Needle
     if (this.meterNeedle) {
       const targetAngle = motorSpeed * 0.75;
-      this.meterNeedle.rotation.z = THREE.MathUtils.lerp(this.meterNeedle.rotation.z, targetAngle, 0.1);
+      this.meterNeedle.rotation.z = THREE.MathUtils.lerp(this.meterNeedle.rotation.z, targetAngle, 0.12);
     }
 
+    // 8. Dynamics Vectors
     if (options.showDynamicsVectors) {
-      const scale = Math.max(0.1, Math.abs(motorSpeed));
+      const scale = Math.max(0.12, Math.abs(motorSpeed));
       if (this.leftVelArrow && this.rightVelArrow && this.resultantVelArrow) {
         this.leftVelArrow.scale.set(1, 1, scale * 1.5);
         this.rightVelArrow.scale.set(1, 1, scale * 1.5);

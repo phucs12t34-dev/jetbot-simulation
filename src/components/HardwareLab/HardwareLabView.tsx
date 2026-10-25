@@ -29,8 +29,23 @@ import {
   Gauge,
   Flame,
   Check,
+  Play,
+  Square,
+  Code2,
+  Terminal,
+  GripHorizontal,
+  RotateCcw,
 } from "lucide-react";
 
+const DEFAULT_OFFSETS: { [id: string]: { x: number; y: number } } = {
+  camera: { x: -290, y: -100 },
+  jetson_nano: { x: 75, y: -140 },
+  motor_driver: { x: 85, y: -30 },
+  motors: { x: -290, y: 40 },
+  oled: { x: -290, y: -30 },
+  battery: { x: 80, y: 60 },
+  led_indicator: { x: 85, y: 140 },
+};
 export const HardwareLabView: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [explodeProgress, setExplodeProgress] = useState<number>(0);
@@ -47,11 +62,25 @@ export const HardwareLabView: React.FC = () => {
   const [showPullRings, setShowPullRings] = useState<boolean>(true);
   const [showCallouts, setShowCallouts] = useState<boolean>(true);
 
-  // Motor & Galvanometer live test speed (-1.0 to +1.0)
-  const [motorTestSpeed, setMotorTestSpeed] = useState<number>(0.45);
-  const [activeTab, setActiveTab] = useState<"visuals" | "motor" | "explode">("visuals");
+  // Independent Motor Speeds (-1.0 to +1.0)
+  const [leftMotorSpeed, setLeftMotorSpeed] = useState<number>(0.45);
+  const [rightMotorSpeed, setRightMotorSpeed] = useState<number>(0.45);
+
+  // Basic Python Function Practice State
+  const [activePracticeAction, setActivePracticeAction] = useState<{
+    name: string;
+    code: string;
+    description: string;
+    duration: number;
+    timeLeft: number;
+  } | null>(null);
+
+  const [activeTab, setActiveTab] = useState<"practice" | "motor" | "visuals" | "explode">("practice");
   const [calloutAnchors, setCalloutAnchors] = useState<CalloutAnchor[]>([]);
   const [activeCalloutId, setActiveCalloutId] = useState<string | null>(null);
+
+  const [cardOffsets, setCardOffsets] = useState<{ [id: string]: { x: number; y: number } }>(DEFAULT_OFFSETS);
+  const dragRef = useRef<{ id: string; startX: number; startY: number; initOffsetX: number; initOffsetY: number } | null>(null);
 
   const partsRef = useRef<JetBotMeshParts | null>(null);
   const visualLabRef = useRef<VisualLabEnvironment | null>(null);
@@ -59,6 +88,21 @@ export const HardwareLabView: React.FC = () => {
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
+  useEffect(() => {
+    if (!activePracticeAction) return;
+    const interval = setInterval(() => {
+      setActivePracticeAction((prev) => {
+        if (!prev) return null;
+        if (prev.timeLeft <= 0.1) {
+          setLeftMotorSpeed(0);
+          setRightMotorSpeed(0);
+          return null;
+        }
+        return { ...prev, timeLeft: Math.max(0, prev.timeLeft - 0.1) };
+      });
+    }, 100);
+    return () => clearInterval(interval);
+  }, [activePracticeAction]);
   useEffect(() => {
     if (!mountRef.current) return;
     const container = mountRef.current;
@@ -192,16 +236,16 @@ export const HardwareLabView: React.FC = () => {
 
       controls.update();
 
-      // Spin Wheels according to test motor speed
-      if (partsRef.current && motorTestSpeed !== 0) {
-        const wheelSpin = motorTestSpeed * dt * 16;
-        partsRef.current.leftWheel.rotation.x += wheelSpin;
-        partsRef.current.rightWheel.rotation.x += wheelSpin;
+      // Spin Wheels independently according to left and right motor speeds
+      if (partsRef.current) {
+        if (leftMotorSpeed !== 0) partsRef.current.leftWheel.rotation.x += leftMotorSpeed * dt * 16;
+        if (rightMotorSpeed !== 0) partsRef.current.rightWheel.rotation.x += rightMotorSpeed * dt * 16;
       }
 
       // Update Visual Lab Animations (Vision cone particles, I2C pulses, LEDs, meter needle)
       if (visualLabRef.current) {
-        visualLabRef.current.update(dt, motorTestSpeed, {
+        const avgSpeed = (leftMotorSpeed + rightMotorSpeed) / 2;
+        visualLabRef.current.update(dt, avgSpeed, {
           showVisionField,
           showSignalFlow,
           showDynamicsVectors,
@@ -243,7 +287,7 @@ export const HardwareLabView: React.FC = () => {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [isLightMode]);
+  }, [isLightMode, leftMotorSpeed, rightMotorSpeed]);
 
   useEffect(() => {
     if (controlsRef.current) controlsRef.current.autoRotate = autoRotate;
@@ -271,8 +315,68 @@ export const HardwareLabView: React.FC = () => {
     setSelectedComponent(comp);
   };
 
+  const resetCardOffsets = () => {
+    soundFx.playClick();
+    setCardOffsets(DEFAULT_OFFSETS);
+  };
+
+  const handleRunPractice = (
+    name: string,
+    codeText: string,
+    desc: string,
+    leftSpd: number,
+    rightSpd: number,
+    dur: number = 3.0
+  ) => {
+    soundFx.playClick();
+    setLeftMotorSpeed(leftSpd);
+    setRightMotorSpeed(rightSpd);
+    setActivePracticeAction({
+      name,
+      code: codeText,
+      description: desc,
+      duration: dur,
+      timeLeft: dur,
+    });
+  };
+
+  const handleStopAll = () => {
+    soundFx.playCollisionAlert();
+    setLeftMotorSpeed(0);
+    setRightMotorSpeed(0);
+    setActivePracticeAction(null);
+  };
+
+  const handleDragStart = (id: string, e: React.PointerEvent) => {
+    e.stopPropagation();
+    const currOffset = cardOffsets[id] || DEFAULT_OFFSETS[id] || { x: 70, y: -40 };
+    dragRef.current = {
+      id,
+      startX: e.clientX,
+      startY: e.clientY,
+      initOffsetX: currOffset.x,
+      initOffsetY: currOffset.y,
+    };
+  };
+
+  const handleContainerPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const { id, startX, startY, initOffsetX, initOffsetY } = dragRef.current;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    setCardOffsets((prev) => ({
+      ...prev,
+      [id]: { x: initOffsetX + dx, y: initOffsetY + dy },
+    }));
+  };
+
+  const handleContainerPointerUp = () => {
+    dragRef.current = null;
+  };
+
+
   return (
-    <div className={"relative w-full h-[calc(100vh-3.5rem)] flex flex-col md:flex-row overflow-hidden " + (isLightMode ? "bg-slate-50 text-slate-800" : "bg-[#06090e] text-gray-100") + " select-none"}>
+    <div className={"relative w-full h-[calc(100vh-3.5rem)] flex flex-col md:flex-row overflow-hidden " + (isLightMode ? "bg-slate-50 text-slate-800" : "bg-[#06090e] text-gray-100") + " select-none"} onPointerMove={handleContainerPointerMove} onPointerUp={handleContainerPointerUp}>
       {/* Main 3D Viewport */}
       <div className="relative flex-1 h-full min-h-[420px] overflow-hidden" ref={mountRef}>
         {/* Top Floating Control Dock */}
@@ -335,69 +439,72 @@ export const HardwareLabView: React.FC = () => {
         {/* 3D FLOATING CALLOUT BADGES IN WORLD SPACE (Như trong ảnh mẫu) */}
         {showCallouts && (
           <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
+            {/* SVG Canvas for High-Tech Leader Lines */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+              <defs>
+                <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="glow" />
+                  <feComposite in="SourceGraphic" in2="glow" operator="over" />
+                </filter>
+              </defs>
+              {calloutAnchors.map((anchor) => {
+                if (!anchor.screenPos.visible) return null;
+                const offset = cardOffsets[anchor.id] || DEFAULT_OFFSETS[anchor.id] || { x: 70, y: -40 };
+                const ax = anchor.screenPos.x;
+                const ay = anchor.screenPos.y;
+                const cx = ax + offset.x;
+                const cy = ay + offset.y;
+                const cardW = 250;
+                const targetX = offset.x >= 0 ? cx : cx + cardW;
+                const targetY = cy + 32;
+                const midX = (ax + targetX) / 2;
+                return (
+                  <g key={"line-" + anchor.id}>
+                    <circle cx={ax} cy={ay} r="7" fill="none" stroke={anchor.color} strokeWidth="1.5" opacity="0.4" className="animate-ping" />
+                    <circle cx={ax} cy={ay} r="3.5" fill={anchor.color} stroke="#ffffff" strokeWidth="1" filter="url(#glow-filter)" />
+                    <path d={`M ${ax} ${ay} C ${midX} ${ay}, ${midX} ${targetY}, ${targetX} ${targetY}`} fill="none" stroke={anchor.color} strokeWidth="2" strokeDasharray={dragRef.current?.id === anchor.id ? "4 3" : undefined} opacity="0.85" />
+                    <circle cx={targetX} cy={targetY} r="3" fill="#ffffff" stroke={anchor.color} strokeWidth="2" />
+                  </g>
+                );
+              })}
+            </svg>
+
+            {/* Draggable Callout Cards */}
             {calloutAnchors.map((anchor) => {
               if (!anchor.screenPos.visible) return null;
               const isHovered = hoveredComponentId === anchor.componentId || activeCalloutId === anchor.id;
+              const isDragging = dragRef.current?.id === anchor.id;
               const comp = JETBOT_COMPONENTS.find((c) => c.id === anchor.componentId);
+              const offset = cardOffsets[anchor.id] || DEFAULT_OFFSETS[anchor.id] || { x: 70, y: -40 };
+              const posX = anchor.screenPos.x + offset.x;
+              const posY = anchor.screenPos.y + offset.y;
 
               return (
                 <div
                   key={anchor.id}
-                  className="absolute pointer-events-auto transition-transform duration-100"
-                  style={{
-                    left: `${anchor.screenPos.x}px`,
-                    top: `${anchor.screenPos.y}px`,
-                  }}
+                  className={"absolute pointer-events-auto cyber-panel px-3 py-2 rounded-xl border flex flex-col gap-0.5 shadow-2xl backdrop-blur-md select-none transition-all duration-75 " + (isDragging ? "ring-2 ring-cyber-accent scale-105 z-40 bg-black/95 opacity-100 cursor-grabbing" : isHovered ? "scale-105 border-white bg-black/95 z-30 ring-2 ring-nvidia-green shadow-nvidia-green/40 cursor-grab" : "bg-[#090e17]/90 border-cyber-border hover:border-gray-400 opacity-95 cursor-grab")}
+                  style={{ left: `${posX}px`, top: `${posY}px`, width: "250px" }}
+                  onPointerDown={(e) => handleDragStart(anchor.id, e)}
                   onMouseEnter={() => setActiveCalloutId(anchor.id)}
                   onMouseLeave={() => setActiveCalloutId(null)}
                 >
-                  {/* Glowing 3D Anchor Ring & Dot at exact component position */}
-                  <div className="absolute -left-2 -top-2 w-4 h-4 flex items-center justify-center">
-                    <span
-                      className="absolute w-4 h-4 rounded-full animate-ping opacity-60"
-                      style={{ backgroundColor: anchor.color }}
-                    />
-                    <span
-                      className="relative w-2.5 h-2.5 rounded-full border border-white shadow-lg"
-                      style={{ backgroundColor: anchor.color }}
-                    />
+                  <div className="flex items-center justify-between gap-1.5 border-b border-cyber-border/40 pb-1">
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold font-mono tracking-wider uppercase text-gray-300">
+                      <GripHorizontal className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                      <span className="text-nvidia-green">{anchor.badge}</span>
+                    </div>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold text-black" style={{ backgroundColor: anchor.color }}>{anchor.category}</span>
                   </div>
-
-                  {/* Vertical Neon Leader Line */}
-                  <div
-                    className="absolute left-0 bottom-2 w-[1.5px] h-9 -translate-x-1/2 shadow-lg"
-                    style={{
-                      background: `linear-gradient(to top, ${anchor.color}, transparent)`,
-                    }}
-                  />
-
-                  {/* Floating Callout Card (Styled exactly like reference image badges) */}
-                  <div
-                    onClick={() => comp && handleFocusComponent(comp)}
-                    className={"absolute -top-16 left-3 -translate-y-full cyber-panel px-3 py-2 rounded-xl border flex flex-col gap-0.5 shadow-2xl backdrop-blur-md cursor-pointer transition-all duration-200 select-none " + (isHovered ? "scale-105 border-white bg-black/95 z-30 ring-2 ring-nvidia-green shadow-nvidia-green/40" : "bg-[#090e17]/90 border-cyber-border hover:border-gray-400 opacity-90")}
-                    style={{ minWidth: "220px", maxWidth: "280px" }}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 text-[10px] font-bold font-mono tracking-wider uppercase text-gray-300">
-                        <span className="text-nvidia-green">◀</span>
-                        <span>{anchor.badge}</span>
-                        <span className="text-nvidia-green">▶</span>
-                      </div>
-                      <span
-                        className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold text-black"
-                        style={{ backgroundColor: anchor.color }}
-                      >
-                        {anchor.category}
-                      </span>
-                    </div>
-
-                    <div className="text-xs font-bold text-white font-display leading-tight mt-0.5">
-                      {anchor.title}
-                    </div>
-
-                    <div className="text-[10px] text-gray-300 leading-snug font-sans mt-0.5 line-clamp-2">
-                      {anchor.subTitle}
-                    </div>
+                  <div onClick={() => comp && handleFocusComponent(comp)} className="cursor-pointer group mt-0.5">
+                    <div className="text-xs font-bold text-white font-display leading-tight group-hover:text-nvidia-green transition-colors">{anchor.title}</div>
+                    <div className="text-[10px] text-gray-300 leading-snug font-sans mt-0.5 line-clamp-2">{anchor.subTitle}</div>
+                  </div>
+                  <div className="flex items-center justify-between text-[9px] text-gray-400 pt-1 font-mono">
+                    <span className="text-cyber-accent">Kéo thả để di chuyển</span>
+                    <button onClick={() => comp && handleFocusComponent(comp)} className="text-nvidia-green hover:underline flex items-center gap-0.5">
+                      <span>Chi tiết</span>
+                      <Info className="w-3 h-3" />
+                    </button>
                   </div>
                 </div>
               );
@@ -405,141 +512,175 @@ export const HardwareLabView: React.FC = () => {
           </div>
         )}
 
-        {/* BOTTOM FLOATING EXPERIMENT DOCK (Bảng Thí Nghiệm Động Học & AI) */}
+        {/* BOTTOM FLOATING EXPERIMENT DOCK */}
         <div className="absolute bottom-3 left-3 right-3 sm:left-6 sm:right-auto z-20 cyber-panel p-2.5 rounded-2xl border border-cyber-border shadow-2xl backdrop-blur-lg flex flex-col gap-2 max-w-xl pointer-events-auto">
           {/* Tab Headers */}
-          <div className="flex items-center justify-between gap-1 border-b border-cyber-border/70 pb-2">
+          <div className="flex items-center justify-between gap-1 border-b border-cyber-border/70 pb-2 overflow-x-auto no-scrollbar">
             <div className="flex items-center gap-1">
               <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setActiveTab("visuals");
-                }}
-                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all " + (activeTab === "visuals" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
+                onClick={() => { soundFx.playClick(); setActiveTab("practice"); }}
+                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all " + (activeTab === "practice" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
+              >
+                <Code2 className="w-3.5 h-3.5" />
+                <span>Thực Hành Hàm Python SDK</span>
+              </button>
+
+              <button
+                onClick={() => { soundFx.playClick(); setActiveTab("motor"); }}
+                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all " + (activeTab === "motor" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
+              >
+                <Gauge className="w-3.5 h-3.5" />
+                <span>Thí Nghiệm Động Cơ & Điện Kế</span>
+              </button>
+
+              <button
+                onClick={() => { soundFx.playClick(); setActiveTab("visuals"); }}
+                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all " + (activeTab === "visuals" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>Lớp Trực Quan 3D</span>
               </button>
 
               <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setActiveTab("motor");
-                }}
-                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all " + (activeTab === "motor" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
-              >
-                <Gauge className="w-3.5 h-3.5" />
-                <span>Thử Nghiệm Động Cơ & Điện Kế</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setActiveTab("explode");
-                }}
-                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all " + (activeTab === "explode" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
+                onClick={() => { soundFx.playClick(); setActiveTab("explode"); }}
+                className={"flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all " + (activeTab === "explode" ? "bg-nvidia-green text-black font-bold shadow" : "text-gray-300 hover:text-white hover:bg-cyber-surface")}
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>Bóc Tách 3D ({Math.round(explodeProgress * 100)}%)</span>
+                <span>Bóc Tách ({Math.round(explodeProgress * 100)}%)</span>
               </button>
             </div>
           </div>
 
-          {/* TAB 1: VISUAL FIELD TOGGLES */}
-          {activeTab === "visuals" && (
-            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
-              <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setShowVisionField(!showVisionField);
-                }}
-                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showVisionField ? "bg-emerald-950/80 border-emerald-500 text-emerald-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
-              >
-                <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Tia Thị Giác AI (Camera FOV)</span>
-              </button>
+          {/* TAB 1: PRACTICE BASIC PYTHON FUNCTIONS */}
+          {activeTab === "practice" && (
+            <div className="flex flex-col gap-2 pt-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-mono text-gray-300 flex items-center gap-1.5">
+                  <Terminal className="w-3.5 h-3.5 text-nvidia-green" />
+                  <span>Chọn hàm điều khiển để thực hành mô phỏng thực tế trên xe:</span>
+                </span>
+                {activePracticeAction && (
+                  <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-nvidia-green/20 text-nvidia-green font-bold animate-pulse">
+                    Đang chạy: {activePracticeAction.timeLeft.toFixed(1)}s
+                  </span>
+                )}
+              </div>
 
-              <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setShowSignalFlow(!showSignalFlow);
-                }}
-                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showSignalFlow ? "bg-sky-950/80 border-sky-500 text-sky-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
-              >
-                <Zap className="w-3.5 h-3.5 text-sky-400" />
-                <span>Dòng Tín Hiệu I2C & Năng Lượng</span>
-              </button>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs font-mono">
+                <button
+                  onClick={() => handleRunPractice("robot.forward(0.5)", "robot.forward(speed=0.5)\ntime.sleep(2.5)\nrobot.stop()", "Tiến thẳng: Cả hai động cơ quay cùng chiều với tốc độ +50%", 0.5, 0.5, 2.5)}
+                  className="px-2.5 py-1.5 rounded-lg border border-cyber-border bg-black/40 hover:bg-cyber-surface hover:border-nvidia-green text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-nvidia-green font-bold">1. robot.forward()</span>
+                  <span className="text-[10px] text-gray-400">Tiến thẳng (+50%)</span>
+                </button>
 
-              <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setShowDynamicsVectors(!showDynamicsVectors);
-                }}
-                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showDynamicsVectors ? "bg-amber-950/80 border-amber-500 text-amber-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
-              >
-                <Compass className="w-3.5 h-3.5 text-amber-400" />
-                <span>Véc-tơ Lực & Mô-men Bánh Xe</span>
-              </button>
+                <button
+                  onClick={() => handleRunPractice("robot.backward(0.4)", "robot.backward(speed=0.4)\ntime.sleep(2.0)\nrobot.stop()", "Lùi xe: Cả hai động cơ đảo chiều PWM sang -40%", -0.4, -0.4, 2.0)}
+                  className="px-2.5 py-1.5 rounded-lg border border-cyber-border bg-black/40 hover:bg-cyber-surface hover:border-red-500 text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-red-400 font-bold">2. robot.backward()</span>
+                  <span className="text-[10px] text-gray-400">Lùi xe (-40%)</span>
+                </button>
 
-              <button
-                onClick={() => {
-                  soundFx.playClick();
-                  setShowCallouts(!showCallouts);
-                }}
-                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showCallouts ? "bg-purple-950/80 border-purple-500 text-purple-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
-              >
-                <Radio className="w-3.5 h-3.5 text-purple-400" />
-                <span>Thẻ Chú Thích 3D HUD</span>
-              </button>
+                <button
+                  onClick={() => handleRunPractice("robot.left(0.4)", "robot.left(speed=0.4)\ntime.sleep(1.8)\nrobot.stop()", "Quay trái tại chỗ: Bánh phải tiến (+40%), bánh trái lùi (-40%)", -0.4, 0.4, 1.8)}
+                  className="px-2.5 py-1.5 rounded-lg border border-cyber-border bg-black/40 hover:bg-cyber-surface hover:border-sky-500 text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-sky-400 font-bold">3. robot.left()</span>
+                  <span className="text-[10px] text-gray-400">Quay trái tại chỗ</span>
+                </button>
+
+                <button
+                  onClick={() => handleRunPractice("robot.right(0.4)", "robot.right(speed=0.4)\ntime.sleep(1.8)\nrobot.stop()", "Quay phải tại chỗ: Bánh trái tiến (+40%), bánh phải lùi (-40%)", 0.4, -0.4, 1.8)}
+                  className="px-2.5 py-1.5 rounded-lg border border-cyber-border bg-black/40 hover:bg-cyber-surface hover:border-amber-500 text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-amber-400 font-bold">4. robot.right()</span>
+                  <span className="text-[10px] text-gray-400">Quay phải tại chỗ</span>
+                </button>
+
+                <button
+                  onClick={() => handleRunPractice("robot.set_motors(0.6, 0.2)", "robot.set_motors(left_speed=0.6, right_speed=0.2)\ntime.sleep(2.5)\nrobot.stop()", "Vào cua vi sai: Bánh trái 60%, bánh phải 20% tạo góc lượn mượt mà", 0.6, 0.2, 2.5)}
+                  className="px-2.5 py-1.5 rounded-lg border border-cyber-border bg-black/40 hover:bg-cyber-surface hover:border-purple-500 text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-purple-400 font-bold">5. set_motors()</span>
+                  <span className="text-[10px] text-gray-400">Vào cua vi sai</span>
+                </button>
+
+                <button
+                  onClick={handleStopAll}
+                  className="px-2.5 py-1.5 rounded-lg border border-red-500/40 bg-red-950/40 hover:bg-red-600 hover:text-white text-left flex flex-col gap-0.5 transition-all"
+                >
+                  <span className="text-red-400 font-bold flex items-center gap-1">
+                    <Square className="w-3 h-3 fill-current" />
+                    6. robot.stop()
+                  </span>
+                  <span className="text-[10px] text-gray-400">Dừng khẩn cấp (0%)</span>
+                </button>
+              </div>
+
+              {activePracticeAction && (
+                <div className="p-2 rounded-lg bg-black/80 border border-cyber-border font-mono text-[11px] text-gray-200">
+                  <div className="flex items-center justify-between text-nvidia-green font-bold mb-1">
+                    <span>{">>> "} {activePracticeAction.name}</span>
+                    <span className="text-[10px] text-gray-400 font-normal">{activePracticeAction.description}</span>
+                  </div>
+                  <pre className="text-[10px] text-gray-300 select-text overflow-x-auto leading-relaxed">
+                    {activePracticeAction.code}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
 
-          {/* TAB 2: MOTOR & GALVANOMETER EXPERIMENT */}
+          {/* TAB 2: LIVE MOTOR & GALVANOMETER EXPERIMENT */}
           {activeTab === "motor" && (
             <div className="flex flex-col gap-2 pt-1">
               <div className="flex items-center justify-between text-xs font-mono text-gray-300">
                 <span className="flex items-center gap-1.5 text-cyber-accent">
                   <Activity className="w-3.5 h-3.5 text-nvidia-green" />
-                  <span>Tốc Độ Băm Xung PWM:</span>
-                  <strong className="text-white">{(motorTestSpeed * 100).toFixed(0)}%</strong>
+                  <span>Bánh Trái:</span>
+                  <strong className="text-white">{(leftMotorSpeed * 100).toFixed(0)}%</strong>
+                  <span className="ml-2">Bánh Phải:</span>
+                  <strong className="text-white">{(rightMotorSpeed * 100).toFixed(0)}%</strong>
                 </span>
 
                 <div className="flex items-center gap-3 text-[11px]">
                   <span className="text-amber-400">
-                    Điện Áp: <strong>{(motorTestSpeed * 7.4).toFixed(1)}V</strong>
+                    Điện Áp: <strong>{(((leftMotorSpeed + rightMotorSpeed) / 2) * 7.4).toFixed(1)}V</strong>
                   </span>
                   <span className="text-emerald-400">
-                    Vận Tốc: <strong>{(Math.abs(motorTestSpeed) * 0.65).toFixed(2)} m/s</strong>
-                  </span>
-                  <span className={motorTestSpeed > 0 ? "text-emerald-400 font-bold" : motorTestSpeed < 0 ? "text-red-400 font-bold" : "text-gray-400"}>
-                    D2 LED: {motorTestSpeed > 0 ? "Xanh Sáng" : motorTestSpeed < 0 ? "Đỏ Sáng" : "Nghỉ"}
+                    Vận Tốc: <strong>{(Math.abs((leftMotorSpeed + rightMotorSpeed) / 2) * 0.65).toFixed(2)} m/s</strong>
                   </span>
                 </div>
               </div>
 
-              {/* Slider */}
               <div className="flex items-center gap-3">
                 <input
                   type="range"
                   min="-1.0"
                   max="1.0"
                   step="0.05"
-                  value={motorTestSpeed}
-                  onChange={(e) => setMotorTestSpeed(parseFloat(e.target.value))}
+                  value={(leftMotorSpeed + rightMotorSpeed) / 2}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setLeftMotorSpeed(val);
+                    setRightMotorSpeed(val);
+                  }}
                   className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-nvidia-green"
                 />
               </div>
 
-              {/* Quick Presets */}
               <div className="flex items-center gap-1.5 text-xs">
                 {[-0.8, -0.4, 0, 0.45, 0.8].map((spd) => (
                   <button
                     key={spd}
                     onClick={() => {
                       soundFx.playClick();
-                      setMotorTestSpeed(spd);
+                      setLeftMotorSpeed(spd);
+                      setRightMotorSpeed(spd);
                     }}
-                    className={"px-2.5 py-0.5 rounded text-[11px] font-mono font-bold transition-all " + (motorTestSpeed === spd ? "bg-nvidia-green text-black shadow" : "bg-black/50 text-gray-400 hover:text-white")}
+                    className={"px-2.5 py-0.5 rounded text-[11px] font-mono font-bold transition-all " + (leftMotorSpeed === spd && rightMotorSpeed === spd ? "bg-nvidia-green text-black shadow" : "bg-black/50 text-gray-400 hover:text-white")}
                   >
                     {spd === 0 ? "Dừng (0%)" : (spd > 0 ? "+" : "") + Math.round(spd * 100) + "%"}
                   </button>
@@ -548,7 +689,44 @@ export const HardwareLabView: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 3: EXPLODE SLIDER */}
+          {/* TAB 3: VISUAL FIELD TOGGLES */}
+          {activeTab === "visuals" && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+              <button
+                onClick={() => { soundFx.playClick(); setShowVisionField(!showVisionField); }}
+                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showVisionField ? "bg-emerald-950/80 border-emerald-500 text-emerald-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
+              >
+                <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Tia Thị Giác AI (Camera FOV)</span>
+              </button>
+
+              <button
+                onClick={() => { soundFx.playClick(); setShowSignalFlow(!showSignalFlow); }}
+                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showSignalFlow ? "bg-sky-950/80 border-sky-500 text-sky-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
+              >
+                <Zap className="w-3.5 h-3.5 text-sky-400" />
+                <span>Dòng Tín Hiệu I2C & Năng Lượng</span>
+              </button>
+
+              <button
+                onClick={() => { soundFx.playClick(); setShowDynamicsVectors(!showDynamicsVectors); }}
+                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showDynamicsVectors ? "bg-amber-950/80 border-amber-500 text-amber-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
+              >
+                <Compass className="w-3.5 h-3.5 text-amber-400" />
+                <span>Véc-tơ Lực & Mô-men Bánh Xe</span>
+              </button>
+
+              <button
+                onClick={() => { soundFx.playClick(); setShowCallouts(!showCallouts); }}
+                className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all " + (showCallouts ? "bg-purple-950/80 border-purple-500 text-purple-300 shadow" : "bg-black/40 border-cyber-border text-gray-400")}
+              >
+                <Radio className="w-3.5 h-3.5 text-purple-400" />
+                <span>Thẻ Chú Thích Kéo Thả 3D HUD</span>
+              </button>
+            </div>
+          )}
+
+          {/* TAB 4: EXPLODE SLIDER */}
           {activeTab === "explode" && (
             <div className="flex flex-col gap-2 pt-1">
               <div className="flex justify-between text-xs font-mono text-gray-300">
@@ -568,10 +746,7 @@ export const HardwareLabView: React.FC = () => {
                 {[0, 0.5, 1.0].map((val) => (
                   <button
                     key={val}
-                    onClick={() => {
-                      soundFx.playClick();
-                      setExplodeProgress(val);
-                    }}
+                    onClick={() => { soundFx.playClick(); setExplodeProgress(val); }}
                     className={"px-3 py-1 rounded text-[11px] font-mono font-bold " + (explodeProgress === val ? "bg-nvidia-green text-black" : "bg-black/50 text-gray-300 hover:text-white")}
                   >
                     {val === 0 ? "Thu Gọn (0%)" : val === 0.5 ? "Bóc Tách Vừa (50%)" : "Bóc Tách Toàn Bộ (100%)"}

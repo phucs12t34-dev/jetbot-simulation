@@ -30,7 +30,7 @@ export const SimulationArenaView: React.FC<SimulationArenaViewProps> = ({ robotS
   const [currentArena, setCurrentArena] = useState<ArenaId>("road");
   const [cameraMode, setCameraMode] = useState<"chase" | "orbit" | "top">("chase");
   const [isLightMode, setIsLightMode] = useState<boolean>(true);
-  const [speedMult, setSpeedMult] = useState<number>(1.5);
+  const [speedMult, setSpeedMult] = useState<number>(1.0);
   const [cteCm, setCteCm] = useState<number>(0);
 
   const cameraModeRef = useRef<"chase" | "orbit" | "top">("chase");
@@ -63,12 +63,14 @@ export const SimulationArenaView: React.FC<SimulationArenaViewProps> = ({ robotS
     camera.position.set(0, 3.5, 4.5);
     cameraRef.current = camera;
 
-    // Renderer
+    // High-Definition Renderer with supersampling & tone mapping
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.5));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = isLightMode ? 1.25 : 1.15;
     container.appendChild(renderer.domElement);
 
     // Orbit Controls
@@ -330,7 +332,7 @@ export const SimulationArenaView: React.FC<SimulationArenaViewProps> = ({ robotS
             <Zap className="w-3.5 h-3.5" /> Tốc độ:
           </span>
           <div className="flex gap-1">
-            {[1.0, 1.5, 2.0, 3.0].map((spd) => (
+            {[0.8, 1.0, 1.5, 2.0].map((spd) => (
               <button
                 key={spd}
                 onClick={() => {
